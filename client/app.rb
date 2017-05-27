@@ -2,16 +2,16 @@ require 'rubygems'
 require 'bundler/setup'
 require 'concurrent'
 require 'httparty'
+require 'pry'
 
 
 module Monik
   MAX_PERCENT = 100.0
   RAM_MESUAR_COUNT = 3
+  SEND_DATA_DELAY = 300
 
   class Client
     include Concurrent::Async
-
-    attr_accessor :cpu_values, :ram_values
 
     @active = true
 
@@ -32,14 +32,19 @@ module Monik
     end
 
     def run
-      self.async.collect_cpu
-      self.async.collect_ram
+      puts 'Client start working...'
+      Concurrent::Future.execute { collect_cpu }
+      Concurrent::Future.execute { collect_ram }
 
       while Client.active?
-        puts 'send data'
-        HTTParty.post(@api_url, {'a' => 1})
-        sleep @period
+        puts "Sleep for #{SEND_DATA_DELAY} sec"
+        sleep 60
+        send_data
       end
+
+      puts 'Send rest of data...'
+      send_data
+      puts 'Bye bye...'
     end
 
     def collect_cpu
@@ -50,7 +55,24 @@ module Monik
 
     def collect_ram
       loop do
-        @cpu_values << ram_usage
+        @ram_values << ram_usage
+      end
+    end
+
+    def send_data
+      puts "Start send data"
+      puts "API URL: #{@api_url}"
+      body = get_post_body
+      puts "Body: #{body[:cpu].count} cpu, #{body[:ram].count} ram values"
+      begin
+        response = HTTParty.post(@api_url, { body: body })
+        puts "Response: code #{response.code}, status #{response.message}"
+      rescue Errno::ECONNREFUSED => e
+        puts 'Server does not respond'
+        puts e.message
+        puts 'Save not sended data'
+        body[:cpu].each { |v| @cpu_values << v }
+        body[:ram].each { |v| @ram_values << v }
       end
     end
 
@@ -60,7 +82,7 @@ module Monik
       output = `mpstat #{@period} 1`
       /(?<idle>[\d\,]+)\Z/ =~ output
       available_percent = idle.gsub(',', '.').to_f
-      [timestamp, MAX_PERCENT - available_percent]
+      [timestamp, (MAX_PERCENT - available_percent).round(2)]
     end
 
     def ram_usage
@@ -71,8 +93,19 @@ module Monik
         /MemAvailable:\s*(?<mem_available>\d+)/ =~ meminfo
         (mem_available.to_f / mem_total.to_f).round(2) * 100
       end
-      available_percent = (available_percents.inject(&:+) / available_percents.count).round(2)
-      [timestamp, MAX_PERCENT - available_percent]
+      available_percent = available_percents.inject(&:+) / available_percents.count
+      [timestamp, (MAX_PERCENT - available_percent).round(2)]
+    end
+
+    def get_post_body
+      body = {
+        name: @name,
+        cpu: [],
+        ram: []
+      }
+      body[:cpu] << @cpu_values.pop until @cpu_values.empty?
+      body[:ram] << @ram_values.pop until @ram_values.empty?
+      body
     end
 
     def timestamp
@@ -82,9 +115,8 @@ module Monik
 end
 
 Signal.trap("INT") {
-  puts 'Shut down'
+  puts 'Gracefully shut down'
   Monik::Client.active = false
 }
 
-@monik = Monik::Client.new('http://127.0.0.1:3000/register_values', ENV['HOSTNAME'] || 'home')
-@monik.run
+Monik::Client.new('http://127.0.0.1:3000/values', ENV['HOSTNAME'] || 'home').run
