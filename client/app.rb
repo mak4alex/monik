@@ -38,7 +38,7 @@ module Monik
 
       while Client.active?
         puts "Sleep for #{SEND_DATA_DELAY} sec"
-        sleep 60
+        sleep 30
         send_data
       end
 
@@ -63,7 +63,7 @@ module Monik
       puts "Start send data"
       puts "API URL: #{@api_url}"
       body = get_post_body
-      puts "Body: #{body[:cpu].count} cpu, #{body[:ram].count} ram values"
+      puts "Body: #{body[:values][:cpu].count} cpu, #{body[:values][:ram].count} ram values"
       begin
         response = HTTParty.post(@api_url, { body: body })
         puts "Response: code #{response.code}, status #{response.message}"
@@ -71,8 +71,8 @@ module Monik
         puts 'Server does not respond'
         puts e.message
         puts 'Save not sended data'
-        body[:cpu].each { |v| @cpu_values << v }
-        body[:ram].each { |v| @ram_values << v }
+        body[:values][:cpu].each { |v| @cpu_values << v }
+        body[:values][:ram].each { |v| @ram_values << v }
       end
     end
 
@@ -82,7 +82,7 @@ module Monik
       output = `mpstat #{@period} 1`
       /(?<idle>[\d\,]+)\Z/ =~ output
       available_percent = idle.gsub(',', '.').to_f
-      [timestamp, (MAX_PERCENT - available_percent).round(2)]
+      "#{timestamp};#{(MAX_PERCENT - available_percent).round(2)}"
     end
 
     def ram_usage
@@ -94,17 +94,19 @@ module Monik
         (mem_available.to_f / mem_total.to_f).round(2) * 100
       end
       available_percent = available_percents.inject(&:+) / available_percents.count
-      [timestamp, (MAX_PERCENT - available_percent).round(2)]
+      "#{timestamp};#{(MAX_PERCENT - available_percent).round(2)}"
     end
 
     def get_post_body
       body = {
         name: @name,
-        cpu: [],
-        ram: []
+        values: {
+          cpu: [],
+          ram: []
+        }
       }
-      body[:cpu] << @cpu_values.pop until @cpu_values.empty?
-      body[:ram] << @ram_values.pop until @ram_values.empty?
+      body[:values][:cpu] << @cpu_values.pop until @cpu_values.empty?
+      body[:values][:ram] << @ram_values.pop until @ram_values.empty?
       body
     end
 
